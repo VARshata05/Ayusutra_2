@@ -1,0 +1,114 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id          String           @id @default(uuid())
+  name        String
+  email       String           @unique
+  password    String
+  phone       String?
+  dateOfBirth DateTime?
+  bloodGroup  String?
+  medicalNotes String?
+  allergies    String?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  histories   PatientHistory[]
+  symptomLogs SymptomLog[]
+}
+
+model Hospital {
+  id               String   @id @default(uuid())
+  name             String
+  district         String?
+  taluk            String?
+  address          String?
+  phone            String?
+  email            String?
+  type             String   @default("Private")
+  lat              Float?
+  lng              Float?
+  specialities     Json?
+  schemesSupported Json?
+  rating           Float?
+  totalRatings     Int      @default(0)
+  timings          String?
+  isVerified       Boolean  @default(false)
+  source           String   @default("csv")
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([district])
+}
+
+model Diagnostic {
+  id             String   @id @default(uuid())
+  name           String
+  address        String?
+  phone          String?
+  lat            Float?
+  lng            Float?
+  testsAvailable Json?
+  rating         Float?
+  timings        String?
+  homeCollection Boolean  @default(false)
+  isVerified     Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+model BloodBank {
+  id         String   @id @default(uuid())
+  name       String
+  address    String?
+  phone      String?
+  lat        Float?
+  lng        Float?
+  timings    String?
+  isVerified Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+model PatientHistory {
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type       String
+  date       DateTime @default(now())
+  doctorName String?
+  hospital   String?
+  diagnosis  String?
+  notes      String?
+  fileUrl    String?
+  fileName   String?
+  aiSummary  String?
+  medicines  Json?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([userId, date(sort: Desc)])
+}
+
+model SymptomLog {
+  id                     String   @id @default(uuid())
+  userId                 String?
+  user                   User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  symptoms               Json?
+  severityScore          Int?
+  severity               String?
+  possibleConditions     Json?
+  recommendedSpecialists Json?
+  scoringFactors         Json?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+}
