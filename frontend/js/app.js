@@ -1,7 +1,4 @@
-
-// ═══════════════════════════════════════════════════
-// CONFIG & STATE
-// ═══════════════════════════════════════════════════
+// CONFIG AND STATE
 let GMAPS_KEY = window.GOOGLE_MAPS_KEY || '';
 let gmapsLoaded = false;
 let placesService = null;
@@ -118,9 +115,68 @@ window.onGMapsLoaded = function() {
 // AUTH
 // ═══════════════════════════════════════════════════
 function switchAuth(m) {
-  document.querySelectorAll('.auth-tab').forEach((t,i)=>t.classList.toggle('active',(m==='login'&&i===0)||(m==='signup'&&i===1)));
-  document.getElementById('loginForm').style.display = m==='login' ? '' : 'none';
-  document.getElementById('signupForm').style.display = m==='signup' ? '' : 'none';
+  console.log('Switching auth mode to:', m);
+  try {
+    document.querySelectorAll('.auth-tab').forEach((t,i)=>t.classList.toggle('active',(m==='login'&&i===0)||(m==='signup'&&i===1)));
+    const lForm = document.getElementById('loginForm');
+    const sForm = document.getElementById('signupForm');
+    const fForm = document.getElementById('forgotForm');
+    const rForm = document.getElementById('resetForm');
+    if(lForm) lForm.style.display = m==='login' ? '' : 'none';
+    if(sForm) sForm.style.display = m==='signup' ? '' : 'none';
+    if(fForm) fForm.style.display = m==='forgot' ? '' : 'none';
+    if(rForm) rForm.style.display = m==='reset' ? '' : 'none';
+  } catch(e) {
+    console.error('Error in switchAuth:', e);
+  }
+}
+
+async function doForgotPassword() {
+  const email = document.getElementById('forgotEmail').value.trim();
+  if (!email) return showToast('Please enter your email', 'error');
+
+  try {
+    const res = await fetch(`${window.API_BASE}/auth/forgot-password`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.message || 'Error generating reset code');
+    
+    // Automatically fill email in reset form
+    document.getElementById('resetEmail').value = email;
+    
+    showToast('Reset code generated! Check your console/alert.', 'success');
+    // For prototype purposes, since we don't send emails, we alert the code
+    alert(`TEST MODE: Your password reset code is: ${data.test_code}\n\n(In production, this would be emailed to you)`);
+    
+    switchAuth('reset');
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function doResetPassword() {
+  const email = document.getElementById('resetEmail').value.trim();
+  const token = document.getElementById('resetCode').value.trim();
+  const newPassword = document.getElementById('resetPass').value;
+
+  if (!email || !token || !newPassword) return showToast('Please fill all fields', 'error');
+  if (newPassword.length < 6) return showToast('Password must be at least 6 characters', 'error');
+
+  try {
+    const res = await fetch(`${window.API_BASE}/auth/reset-password`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, token, newPassword })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.message || 'Error resetting password');
+    
+    showToast('Password reset successfully! Please sign in.', 'success');
+    switchAuth('login');
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
 }
 async function doLogin() {
   const e=document.getElementById('loginEmail').value.trim(), p=document.getElementById('loginPass').value;
@@ -157,6 +213,12 @@ function loginSuccess(user) {
   document.getElementById('app').style.display = 'block';
   document.getElementById('navName').textContent = user.name.split(' ')[0];
   document.getElementById('navAvatar').textContent = user.name.charAt(0).toUpperCase();
+  
+  // Populate profile dropdown header
+  const ddName = document.getElementById('ddName');
+  const ddEmail = document.getElementById('ddEmail');
+  if (ddName) ddName.textContent = user.name || 'User';
+  if (ddEmail) ddEmail.textContent = user.email || '';
   
   // Update Dashboard fields
   document.getElementById('dashName').value = user.name || '';
@@ -200,19 +262,46 @@ initAuth();
 // ═══════════════════════════════════════════════════
 // NAV
 // ═══════════════════════════════════════════════════
-function show(id) {
+function show(id, skipHistory = false) {
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.nav-links a').forEach(a=>a.classList.remove('active'));
   const targetPage = document.getElementById('page-'+id);
   if(targetPage) targetPage.classList.add('active');
   const n=document.getElementById('nav-'+id); if(n) n.classList.add('active');
+  
+  // Sync bottom nav
+  document.querySelectorAll('.bnav-item').forEach(b => {
+    b.classList.toggle('active', b.dataset.page === id);
+  });
+  
+  // Show/hide floating chat FAB
+  const fab = document.getElementById('floatingChat');
+  if (fab) fab.style.display = (id === 'chatbot') ? 'none' : '';
+  
   window.scrollTo(0,0);
   if(id==='hospitals') renderHospitals();
-  if(id==='diagnostics') { renderDiagnostics(); initFacilityMap('diagMap', cache.diagnostics); }
-  if(id==='blood') { initFacilityMap('bloodMap', cache.bloodBanks); }
+  if(id==='diagnostics') renderDiagnostics();
+  if(id==='blood') selBlood(document.querySelector('.bg-btn') || {classList:{add:()=>{}}}, 'A+');
   if(id==='history') fetchRecords();
   if(id==='dashboard') updateDashboardStats();
+
+  if (!skipHistory) {
+    history.pushState({ pageId: id }, '', `#${id}`);
+  }
 }
+
+window.addEventListener('popstate', (event) => {
+  if (event.state && event.state.pageId) {
+    show(event.state.pageId, true);
+  } else {
+    const hash = window.location.hash.replace('#', '');
+    if (hash && document.getElementById('page-'+hash)) {
+      show(hash, true);
+    } else {
+      show('home', true);
+    }
+  }
+});
 
 // DASHBOARD & PROFILE
 async function updateProfile() {
@@ -254,22 +343,30 @@ async function updateDashboardStats() {
 // GEOLOCATION + REVERSE GEOCODE
 // ═══════════════════════════════════════════════════
 function getLocation(showMsg) {
-  if(!navigator.geolocation) {if(showMsg) alert('Geolocation not supported.'); return;}
+  if(!navigator.geolocation) {if(showMsg) alert(t('errGeoNotSupported')); return;}
   const btn = document.getElementById('locBannerBtn');
   if(btn) {btn.innerHTML='<span class="spinner"></span>Locating…'; btn.disabled=true;}
-  document.getElementById('heroLocText').textContent='📍 Detecting…';
+  document.getElementById('heroLocText').textContent=t('heroLocDetecting');
   navigator.geolocation.getCurrentPosition(
     pos => {
-      userLat = pos.coords.latitude; userLng = pos.coords.longitude;
+      console.log(`Geolocated: ${userLat}, ${userLng}. Fetching address from Nominatim...`);
       // Reverse geocode (no API key needed — OpenStreetMap Nominatim)
-      fetch(`https://nominatim.openstreetmap.org/reverse?lat=${userLat}&lon=${userLng}&format=json&accept-language=en`)
-        .then(r=>r.json()).then(data => {
+      fetch(`https://nominatim.openstreetmap.org/reverse?lat=${userLat}&lon=${userLng}&format=json&accept-language=en`, {
+        headers: { 'User-Agent': 'AyuSutra-Health-App' }
+      })
+        .then(r => {
+          console.log('Nominatim response status:', r.status);
+          if (!r.ok) throw new Error(`Nominatim error: ${r.status}`);
+          return r.json();
+        }).then(data => {
+          console.log('Nominatim data:', data);
           const addr = data.address||{};
           const rawDist = addr.county||addr.district||addr.state_district||addr.city||'';
           userDistrict = matchDistrict(rawDist);
           const city = addr.suburb||addr.city||addr.town||addr.village||rawDist||'Your location';
+          console.log(`Matched district: ${userDistrict}, City: ${city}`);
           document.getElementById('heroLocText').textContent=`✅ ${city}`;
-          if(btn){btn.textContent='✅ Location Active';btn.style.background='var(--forest)';btn.disabled=false;}
+          if(btn){btn.textContent=t('locActive');btn.style.background='var(--forest)';btn.disabled=false;}
           document.getElementById('locBannerTitle').textContent=`📍 ${city}`;
           document.getElementById('locBannerSub').textContent=`Showing hospitals in ${userDistrict} district first`;
           activeDistrict = userDistrict;
@@ -278,17 +375,19 @@ function getLocation(showMsg) {
           buildDistrictBar();
           renderHospitals();
           renderDiagnostics();
-        }).catch(()=>{
+        }).catch(err => {
+          console.error('Nominatim fetch failed:', err);
           userDistrict='Bengaluru'; activeDistrict='Bengaluru';
-          document.getElementById('heroLocText').textContent='✅ Location found';
-          if(btn){btn.textContent='✅ Active';btn.style.background='var(--forest)';btn.disabled=false;}
+          document.getElementById('heroLocText').textContent=t('locFound');
+          if(btn){btn.textContent=t('locActive');btn.style.background='var(--forest)';btn.disabled=false;}
           buildDistrictBar(); renderHospitals();
         });
     },
-    () => {
+    err => {
+      console.warn('Geolocation failed or denied:', err);
       userLat=12.9716; userLng=77.5946; userDistrict='Bengaluru'; activeDistrict='Bengaluru';
-      document.getElementById('heroLocText').textContent='📍 Using Bengaluru (default)';
-      if(btn){btn.textContent='📍 Use My Location';btn.disabled=false;}
+      document.getElementById('heroLocText').textContent=t('locDefault');
+      if(btn){btn.textContent=t('heroLocBtn');btn.disabled=false;}
       buildDistrictBar(); renderHospitals();
     },
     {timeout:9000, enableHighAccuracy:true}
@@ -401,9 +500,9 @@ async function updateProfile() {
       currentUser = data.user;
       loginSuccess(data.user);
     } else {
-      alert(data.message || 'Update failed');
+      alert(data.message || t('errUpdateFailed'));
     }
-  } catch(e) { console.error(e); alert('Network error'); }
+  } catch(e) { console.error(e); alert(t('errNetwork')); }
 }
 
 function updateDashboardStats() {
@@ -417,8 +516,22 @@ function updateDashboardStats() {
 // ═══════════════════════════════════════════════════
 let maps = {};
 function initFacilityMap(divId, items) {
-  if (!items || !items.length) return;
-  if (maps[divId]) { maps[divId].remove(); }
+  if (!items || !items.length) {
+    console.warn(`initFacilityMap called for ${divId} but no items provided.`);
+    return;
+  }
+  
+  console.log(`Initializing map for ${divId} with ${items.length} items...`);
+  
+  if (typeof L === 'undefined') {
+    console.error('Leaflet (L) is not defined! Check if script is loaded.');
+    return;
+  }
+  
+  if (maps[divId]) { 
+    console.log(`Removing existing map for ${divId}`);
+    maps[divId].remove(); 
+  }
 
   const map = L.map(divId).setView([userLat || 12.9716, userLng || 77.5946], 13);
   maps[divId] = map;
@@ -429,14 +542,15 @@ function initFacilityMap(divId, items) {
 
   // User location marker
   if (userLat && userLng) {
+    console.log(`Adding user marker at ${userLat}, ${userLng}`);
     L.circleMarker([userLat, userLng], { color: 'var(--saffron)', radius: 8, fillOpacity: 0.8 })
-     .addTo(map).bindPopup("<b>You are here</b>");
+     .addTo(map).bindPopup(`<b>${t('diagNearMe')}</b>`);
   }
 
   items.forEach(item => {
     if (item.lat && item.lng) {
       const marker = L.marker([item.lat, item.lng]).addTo(map);
-      marker.bindPopup(`<b>${item.name}</b><br>${item.address}<br><button class="btn- fire" style="padding:2px 8px;font-size:10px;margin-top:5px;" onclick="window.open('${mapsDirectionsUrl(item.name, item.address, item.lat, item.lng)}','_blank')">Directions</button>`);
+      marker.bindPopup(`<b>${item.name}</b><br>${item.address}<br><button class="btn-fire" style="padding:2px 8px;font-size:10px;margin-top:5px;" onclick="window.open('${mapsDirectionsUrl(item.name, item.address, item.lat, item.lng)}','_blank')">${t('hospDirections')}</button>`);
     }
   });
 }
@@ -459,23 +573,23 @@ function hospitalCard(h, highlightSpec='') {
     <div class="hcard-top">
       <div class="hcard-name-row">
         <div class="hcard-name">${h.name||h.n}</div>
-        <span class="tag-pill ${isCsv?'tp-csv':'tp-gmaps'}">${isCsv?'Govt DB':'Maps'}</span>
+        <span class="tag-pill ${isCsv?'tp-csv':'tp-gmaps'}">${isCsv?t('hospGovtDb'):t('hospMaps')}</span>
       </div>
       <div class="hcard-addr">📍 ${(h.address||h.a||'').substring(0,75)}${(h.address||h.a||'').length>75?'…':''}</div>
       <div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:5px;align-items:center;">
         ${distStr?`<span class="dist-badge ${cls}">${dist?'📍 ':'🏙 '}${distStr}</span>`:''}
-        ${h.isOpen===true?'<span class="dist-badge near">🟢 Open Now</span>':h.isOpen===false?'<span class="dist-badge far">🔴 Closed</span>':''}
-        <a class="gmaps-link" href="${mapsUrl}" target="_blank">🗺 Directions</a>
+        ${h.isOpen===true?`<span class="dist-badge near">${t('hospOpen')}</span>`:h.isOpen===false?`<span class="dist-badge far">${t('hospClosed')}</span>`:''}
+        <a class="gmaps-link" href="${mapsUrl}" target="_blank">🗺 ${t('hospDirections')}</a>
       </div>
       ${(h.rating)?`<div class="rating-row"><span class="stars">${'★'.repeat(Math.round(h.rating))}${'☆'.repeat(5-Math.round(h.rating))}</span><span class="rating-num">${h.rating} ${h.totalRatings?`(${h.totalRatings})`:''}  </span></div>`:''}
     </div>
     <div class="hcard-body">
-      ${specs.length?`<div class="spec-label">Specialities</div><div class="spec-chips">${specs.map(s=>`<span class="spec-chip${highlightSpec&&s.toUpperCase().includes(highlightSpec.toUpperCase())?' match':''}">${s}</span>`).join('')}</div>`:''}
+      ${specs.length?`<div class="spec-label">${t('hospSpecialities')}</div><div class="spec-chips">${specs.map(s=>`<span class="spec-chip${highlightSpec&&s.toUpperCase().includes(highlightSpec.toUpperCase())?' match':''}">${s}</span>`).join('')}</div>`:''}
       ${schemes.length?`<div class="scheme-chips">${schemes.map(s=>`<span class="scheme-chip">✓ ${s.replace('Ayushman Bharat - Arogya Karnataka','Ayushman Bharat')}</span>`).join('')}</div>`:''}
       ${phone?`<div class="hcard-meta"><span class="meta-item">📞 ${phone}</span></div>`:''}
       <div class="hcard-actions">
-        <button class="btn-cp" onclick="window.open('${mapsUrl}','_blank')">🗺 Get Directions</button>
-        ${phone?`<button class="btn-co" onclick="window.open('tel:${phone.replace(/[^0-9+]/g,'')}')">📞 Call</button>`:`<button class="btn-co" onclick="window.open('${mapsUrl}','_blank')">View on Maps</button>`}
+        <button class="btn-cp" onclick="window.open('${mapsUrl}','_blank')">🗺 ${t('hospDirections')}</button>
+        ${phone?`<button class="btn-co" onclick="window.open('tel:${phone.replace(/[^0-9+]/g,'')}')">📞 ${t('hospCall')}</button>`:`<button class="btn-co" onclick="window.open('${mapsUrl}','_blank')">${t('hospViewOnMaps')}</button>`}
       </div>
     </div>
   </div>`;
@@ -495,6 +609,13 @@ function renderHospitals() {
       if (results && results.length > 0) {
         renderHospitalsBanner('gmaps', results.length);
         document.getElementById('hospCards').innerHTML = results.map(h => hospitalCard(h)).join('');
+        const mapEl = document.getElementById('hospMap');
+        if (mapEl) {
+          mapEl.style.display = 'block';
+          if (typeof initFacilityMap === 'function') {
+            initFacilityMap('hospMap', results);
+          }
+        }
         return;
       }
       renderFromCsv(q, spec, scheme, dist);
@@ -542,6 +663,18 @@ function renderFromCsv(q, spec, scheme, dist) {
     ? shown.map(h => hospitalCard(h, spec)).join('')
     : '<div class="empty-state"><div class="eico">🏥</div><h3>No hospitals found</h3><p>Try different search terms or district</p></div>';
 
+  const mapEl = document.getElementById('hospMap');
+  if (mapEl) {
+    if (shown.length) {
+      mapEl.style.display = 'block';
+      if (typeof initFacilityMap === 'function') {
+        initFacilityMap('hospMap', shown);
+      }
+    } else {
+      mapEl.style.display = 'none';
+    }
+  }
+
   const lmw = document.getElementById('loadMoreWrap');
   if(lmw) lmw.style.display = total > HOSP_PAGE_SIZE ? 'block' : 'none';
   buildDistrictBar();
@@ -561,7 +694,7 @@ function loadMoreHospitals() {
 // ═══════════════════════════════════════════════════
 
 function fetchNearbyDiagnostics() {
-  if (!userLat || !userLng) { alert('Please enable location first.'); getLocation(true); return; }
+  if (!userLat || !userLng) { alert(t('errEnableLocation')); getLocation(true); return; }
   if (!gmapsLoaded) { renderDiagnostics(); return; }
   const diagEl = document.getElementById('diagCards');
   const countEl = document.getElementById('diagCount');
@@ -581,16 +714,16 @@ function fetchNearbyDiagnostics() {
           <div class="hcard-addr">📍 ${c.address}</div>
           <div style="display:flex;gap:5px;margin-top:5px;flex-wrap:wrap;">
             ${haversine(userLat,userLng,c.lat,c.lng)<5?`<span class="dist-badge near">📍 ${haversine(userLat,userLng,c.lat,c.lng).toFixed(1)} km</span>`:`<span class="dist-badge med">📍 ${haversine(userLat,userLng,c.lat,c.lng).toFixed(1)} km</span>`}
-            ${c.isOpen===true?'<span class="dist-badge near">🟢 Open</span>':c.isOpen===false?'<span class="dist-badge far">🔴 Closed</span>':''}
-            <a class="gmaps-link" href="${mapsDirectionsUrl(c.name,c.address,c.lat,c.lng)}" target="_blank">🗺 Directions</a>
+            ${c.isOpen===true?`<span class="dist-badge near">${t('hospOpen')}</span>`:c.isOpen===false?`<span class="dist-badge far">${t('hospClosed')}</span>`:''}
+            <a class="gmaps-link" href="${mapsDirectionsUrl(c.name,c.address,c.lat,c.lng)}" target="_blank">🗺 ${t('hospDirections')}</a>
           </div>
           ${c.rating?`<div class="rating-row"><span class="stars">${'★'.repeat(Math.round(c.rating))}</span><span class="rating-num">${c.rating} (${c.totalRatings})</span></div>`:''}
         </div>
         <div class="hcard-body">
-          <div class="hcard-meta"><span class="meta-item tag-pill tp-gmaps">🗺 Google Maps</span></div>
+          <div class="hcard-meta"><span class="meta-item tag-pill tp-gmaps">🗺 ${t('hospMaps')}</span></div>
           <div class="hcard-actions">
-            <button class="btn-cp" onclick="window.open('${mapsDirectionsUrl(c.name,c.address,c.lat,c.lng)}','_blank')">🗺 Directions</button>
-            <button class="btn-co" onclick="window.open('https://www.google.com/maps/place/?q=place_id:${c.placeId}','_blank')">View Details</button>
+            <button class="btn-cp" onclick="window.open('${mapsDirectionsUrl(c.name,c.address,c.lat,c.lng)}','_blank')">🗺 ${t('hospDirections')}</button>
+            <button class="btn-co" onclick="window.open('https://www.google.com/maps/place/?q=place_id:${c.placeId}','_blank')">${t('navHospitals')}</button>
           </div>
         </div>
       </div>`).join('');
@@ -612,12 +745,14 @@ function renderDiagnostics() {
   const el = document.getElementById('diagCards'); if(!el) return;
   const mapEl = document.getElementById('diagMap');
   const cnt = document.getElementById('diagCount'); 
-  if(cnt) cnt.innerHTML=`<strong>${list.length}</strong> centres (from Dataset)`;
   
-  // Show map for dataset because we mapped coordinates for them!
+  if(cnt) cnt.innerHTML=`<strong>${list.length}</strong> ${t('diagTitle')} (${t('hospLiveSearch').replace('🔴 ','')})`;
+  
   if(mapEl) mapEl.style.display = 'block';
 
-  if(document.getElementById('diagSourceBadge')) document.getElementById('diagSourceBadge').innerHTML='<span class="source-badge source-csv">📋 Verified Dataset</span>';
+  if(document.getElementById('diagSourceBadge')) {
+    document.getElementById('diagSourceBadge').innerHTML=`<span class="source-badge source-csv">📋 ${t('diagNearMe')}</span>`;
+  }
   
   el.innerHTML = list.map(c=>`<div class="hcard">
     <div class="hcard-top">
@@ -626,25 +761,24 @@ function renderDiagnostics() {
         <span style="font-size:.62rem;background:var(--forest-light);color:var(--forest);padding:2px 7px;border-radius:100px;font-weight:700;">${c.type}</span>
       </div>
       <div class="hcard-addr">📍 ${c.address}</div>
-      <a class="gmaps-link" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(c.name+' '+c.address)}" target="_blank">🗺 Google Maps</a>
+      <a class="gmaps-link" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(c.name+' '+c.address)}" target="_blank">🗺 ${t('hospDirections')}</a>
     </div>
     <div class="hcard-body">
       ${c.notes ? `<div style="font-size:0.8rem; color:var(--ink2); margin-bottom:10px;">ℹ️ ${c.notes}</div>` : ''}
       <div class="rating-row">
-        ${c.rating ? `<span class="stars">${'★'.repeat(Math.round(c.rating))}</span><span class="rating-num">${c.rating} (${c.reviews} reviews)</span>` : '<span style="font-size:0.8rem;color:var(--ink3);">No ratings yet</span>'}
+        ${c.rating ? `<span class="stars">${'★'.repeat(Math.round(c.rating))}</span><span class="rating-num">${c.rating} (${c.reviews} ${t('navHistory').toLowerCase()})</span>` : `<span style="font-size:0.8rem;color:var(--ink3);">${t('hospNoResults')}</span>`}
       </div>
       <div class="hcard-meta">
         <span class="meta-item">🕐 ${c.status}</span>
-        <span class="meta-item">📞 ${c.phone !== 'Unknown' ? c.phone : 'Not Available'}</span>
+        <span class="meta-item">📞 ${c.phone !== 'Unknown' ? c.phone : t('hospNoResults')}</span>
       </div>
       <div class="hcard-actions">
-        <button class="btn-cp" onclick="window.open('https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(c.name+' '+c.address)}','_blank')">🗺 Directions</button>
-        ${c.phone !== 'Unknown' ? `<button class="btn-co" onclick="window.open('tel:${c.phone}')">📞 Call</button>` : ''}
+        <button class="btn-cp" onclick="window.open('https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(c.name+' '+c.address)}','_blank')">🗺 ${t('hospDirections')}</button>
+        ${c.phone !== 'Unknown' ? `<button class="btn-co" onclick="window.open('tel:${c.phone}')">📞 ${t('hospCall')}</button>` : ''}
       </div>
     </div>
   </div>`).join('');
   
-  // Plot them on the map
   if(typeof initFacilityMap === 'function') {
     initFacilityMap('diagMap', list);
   }
@@ -653,13 +787,8 @@ function renderDiagnostics() {
 // ═══════════════════════════════════════════════════
 // BLOOD BANK — No fake units, show "Call to confirm"
 // ═══════════════════════════════════════════════════
-const BLOOD_BANKS_DB = [
-  {name:'Rajiv Gandhi Govt. Blood Bank',address:'Jayanagar, Bengaluru',phone:'08026564236',timings:'24×7',lat:12.9283,lng:77.5826},
-  {name:'Manipal Hospital Blood Bank',address:'Old Airport Rd, Bengaluru',phone:'08025023456',timings:'24×7',lat:12.9672,lng:77.6482},
-  {name:'Karnataka Blood Bank',address:'Shivajinagar, Bengaluru',phone:'08022268888',timings:'8AM–8PM',lat:12.9895,lng:77.5946},
-  {name:'Rotary TTK Blood Bank',address:'MG Road, Bengaluru',phone:'08025559999',timings:'9AM–6PM',lat:12.9756,lng:77.6072},
-  {name:'Fortis Blood Bank',address:'Cunningham Rd, Bengaluru',phone:'08066214444',timings:'24×7',lat:12.9867,lng:77.5985},
-];
+// BLOOD_BANKS_DB is loaded from /js/bloodbanks-data.js
+
 
 function selBlood(el, g) {
   document.querySelectorAll('.bg-btn').forEach(b=>b.classList.remove('sel')); el.classList.add('sel');
@@ -688,9 +817,10 @@ function selBlood(el, g) {
 
 function renderBloodCards(banks, g, fromMaps) {
   const el = document.getElementById('bloodResults');
+  if(!el) return;
   el.innerHTML = `<div class="cards-grid">${banks.slice(0,8).map(b => {
     const dist = (userLat&&userLng&&b.lat&&b.lng) ? haversine(userLat,userLng,b.lat,b.lng) : null;
-    const distStr = dist ? `${dist.toFixed(1)} km away` : '';
+    const distStr = dist ? `${dist.toFixed(1)} km ${t('diagNearMe').replace('📍 ','')}` : '';
     const mUrl = mapsDirectionsUrl(b.name||b.n, b.address||b.vicinity||'', b.lat, b.lng);
     const phone = b.phone || b.formatted_phone_number || '';
     return `<div class="hcard">
@@ -699,7 +829,7 @@ function renderBloodCards(banks, g, fromMaps) {
         <div class="hcard-addr">📍 ${b.address||b.vicinity||''}</div>
         <div style="display:flex;gap:5px;margin-top:5px;flex-wrap:wrap;">
           ${distStr?`<span class="dist-badge ${distBadgeClass(dist)}">📍 ${distStr}</span>`:''}
-          <a class="gmaps-link" href="${mUrl}" target="_blank">🗺 Directions</a>
+          <a class="gmaps-link" href="${mUrl}" target="_blank">🗺 ${t('hospDirections')}</a>
         </div>
         ${b.rating?`<div class="rating-row"><span class="stars">${'★'.repeat(Math.round(b.rating))}</span><span class="rating-num">${b.rating}</span></div>`:''}
       </div>
@@ -707,21 +837,21 @@ function renderBloodCards(banks, g, fromMaps) {
         <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;background:var(--red-soft);border-radius:10px;padding:10px 14px;">
           <div style="width:46px;height:46px;border-radius:50%;background:var(--red);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:.92rem;flex-shrink:0;">${g}</div>
           <div>
-            <div style="font-size:.82rem;font-weight:700;color:var(--red);">Requested Blood Type</div>
-            <div style="font-size:.72rem;color:var(--ink2);margin-top:3px;">📞 <strong>Call to confirm availability</strong> before visiting</div>
+            <div style="font-size:.82rem;font-weight:700;color:var(--red);">${t('authBlood')}</div>
+            <div style="font-size:.72rem;color:var(--ink2);margin-top:3px;">📞 <strong>${t('bloodCallConfirm')}</strong></div>
           </div>
         </div>
-        ${b.timings?`<div class="hcard-meta"><span class="meta-item">🕐 ${b.timings}</span>${phone?`<span class="meta-item">📞 ${phone}</span>`:''}</div>`:''}
+        ${b.timings||b.status?`<div class="hcard-meta"><span class="meta-item">🕐 ${b.timings||b.status}</span>${phone?`<span class="meta-item">📞 ${phone}</span>`:''}</div>`:''}
         <div class="hcard-actions">
-          ${phone?`<button class="btn-cp" onclick="window.open('tel:${phone.replace(/[^0-9+]/g,'')}')">📞 Call Bank</button>`:'<button class="btn-cp" onclick="window.open(\'tel:1910\')">📞 1910 Helpline</button>'}
-          <button class="btn-co" onclick="window.open('${mUrl}','_blank')">🗺 Directions</button>
+          ${phone?`<button class="btn-cp" onclick="window.open('tel:${phone.replace(/[^0-9+]/g,'')}')">📞 ${t('bloodCallBank')}</button>`:`<button class="btn-cp" onclick="window.open('tel:1910')">📞 ${t('bloodHelpline')}</button>`}
+          <button class="btn-co" onclick="window.open('${mUrl}','_blank')">🗺 ${t('hospDirections')}</button>
         </div>
       </div>
     </div>`;
   }).join('')}</div>
   <div style="background:var(--amber-soft);border-radius:var(--r-sm);padding:12px 16px;margin-top:14px;font-size:.76rem;color:var(--amber);">
-    ⚠️ Blood availability changes every hour. Always <strong>call ahead</strong> to confirm ${g} availability before visiting any blood bank.<br/>
-    🆘 National Blood Helpline: <strong>1910</strong> (Free, 24×7)
+    ⚠️ ${t('bloodWarning')}<br/>
+    🆘 ${t('bloodHelpline')}: <strong>1910</strong> (Free, 24×7)
   </div>`;
 }
 
@@ -783,7 +913,7 @@ function calcScore() {
 }
 
 function analyzeSymptoms() {
-  if(!symptoms.length) { alert('Please enter at least one symptom.'); return; }
+  if(!symptoms.length) { alert(t('errEnterSymptom')); return; }
   const condSet=new Set(), specMap=new Map();
   symptoms.forEach(s=>{
     const k=s.toLowerCase();
@@ -796,7 +926,7 @@ function analyzeSymptoms() {
   });
   const conditions = [...condSet].slice(0,5);
   const specList = [...specMap.values()].slice(0,4);
-  if(!conditions.length) { conditions.push('Unable to identify — consult a General Physician'); specList.push({name:'General Physician',icon:'👨‍⚕️',desc:'Best first point of contact',csvSpec:'GENERAL MEDICINE'}); }
+  if(!conditions.length) { conditions.push(t('symNoMatch')); specList.push({name:'General Physician',icon:'👨‍⚕️',desc:t('symFirstContact'),csvSpec:'GENERAL MEDICINE'}); }
 
   // 1. Deterministic/Basic UI Rendering
   renderSymptomResults(conditions, specList, calcScore());
@@ -807,11 +937,11 @@ function analyzeSymptoms() {
   
   const aiBox = document.getElementById('aiAnalysisContent') || document.createElement('div');
   aiBox.id = 'aiAnalysisContent';
-  aiBox.innerHTML = '<div class="thinking">AI is performing deep differential analysis…</div>';
+  aiBox.innerHTML = `<div class="thinking">${t('symAiAnalyzing')}</div>`;
   document.getElementById('symResult').querySelector('.result-block:nth-last-child(2)').after(aiBox);
 
   const currentSymptoms = Array.from(document.querySelectorAll('#tagWrap .stag')).map(t => t.firstChild.textContent.trim());
-  if (!currentSymptoms.length) { alert('Please enter at least one symptom first.'); return; }
+  if (!currentSymptoms.length) { alert(t('errEnterSymptom')); return; }
 
   fetch(`${window.API_BASE}/symptoms/analyze`, {
     method: 'POST',
@@ -921,7 +1051,7 @@ async function fetchRecords() {
 async function saveRec() {
   const type=document.getElementById('rType').value, date=document.getElementById('rDate').value,
         doc=document.getElementById('rDoctor').value, hosp=document.getElementById('rHosp').value, notes=document.getElementById('rNotes').value;
-  if(!date||!doc||!notes) { alert('Please fill Date, Doctor and Notes.'); return; }
+  if(!date||!doc||!notes) { alert(t('errFillFields')); return; }
   
   const token = localStorage.getItem('ayusutra_token');
   try {
@@ -933,8 +1063,8 @@ async function saveRec() {
     if(res.ok) {
       document.getElementById('rDoctor').value=''; document.getElementById('rHosp').value=''; document.getElementById('rNotes').value='';
       fetchRecords(); toggleAddRec();
-    } else { alert('Failed to save record'); }
-  } catch(e) { alert('Network error'); }
+    } else { alert(t('errSaveRecord')); }
+  } catch(e) { alert(t('errNetwork')); }
 }
 
 async function delRec(idx) { 
@@ -954,7 +1084,7 @@ async function getAiSummary(idx) {
   const btn = document.getElementById(`sumBtn${idx}`);
   const box = document.getElementById(`sumBox${idx}`);
   if(r.aiSummary) { box.style.display=box.style.display==='none'?'block':'none'; return; }
-  if(btn) { btn.disabled=true; btn.textContent='Summarizing…'; }
+  if(btn) { btn.disabled=true; btn.textContent=t('chatSummarizing'); }
   try {
     const API = window.API_BASE || 'http://localhost:5000/api';
     const res = await fetch(`${API}/chatbot`, {
@@ -986,7 +1116,7 @@ async function sendChat() {
 
   const thinkingDiv = document.createElement('div');
   thinkingDiv.className = 'cmsg bot thinking';
-  thinkingDiv.textContent = 'Thinking…';
+  thinkingDiv.textContent = t('chatThinking');
   chatMsgs.appendChild(thinkingDiv);
 
   const token = localStorage.getItem('ayusutra_token');
@@ -1007,7 +1137,7 @@ async function sendChat() {
     chatMsgs.appendChild(botDiv);
     chatMsgs.scrollTop = chatMsgs.scrollHeight;
   } catch(e) {
-    thinkingDiv.textContent = 'Sorry, I encountered an error. Please try again.';
+    thinkingDiv.textContent = t('errGeneral');
     thinkingDiv.classList.remove('thinking');
   }
 }
@@ -1152,7 +1282,7 @@ function clearChatFile() {
 // Voice Input
 function toggleVoice() {
   if(!('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)) {
-    alert('Voice recognition not supported in your browser. Try Chrome.');
+    alert(t('errVoiceNotSupported'));
     return;
   }
   if(isRecording) {
@@ -1193,7 +1323,7 @@ async function openCamera() {
     cameraStream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
     document.getElementById('cameraVideo').srcObject = cameraStream;
     const m = document.getElementById('cameraModal'); m.style.display='flex';
-  } catch(e) { alert('Camera access denied or not available.'); }
+  } catch(e) { alert(t('errCameraDenied')); }
 }
 function capturePhoto() {
   const video = document.getElementById('cameraVideo');
@@ -1226,4 +1356,84 @@ updateScoreLabel('freq','freqVal',['Rare','Occasional','Daily','Very frequent','
 updateScoreLabel('impact','impactVal',['None','Mild','Moderate','Significant','Cannot function']);
 
 // Initialize i18n if available
-if(typeof initLanguage === 'function') initLanguage();
+try {
+  if(typeof initLanguage === 'function') initLanguage();
+} catch(e) {
+  console.warn('Language init failed - continuing...', e);
+}
+
+// ═══════════════════════════════════════════════════
+// PROFILE DROPDOWN
+// ═══════════════════════════════════════════════════
+function toggleProfileDropdown() {
+  const dd = document.getElementById('profileDropdown');
+  const toggle = document.getElementById('profileToggle');
+  const isOpen = dd.classList.contains('open');
+  if (isOpen) {
+    closeProfileDropdown();
+  } else {
+    dd.classList.add('open');
+    toggle.classList.add('open');
+  }
+}
+function closeProfileDropdown() {
+  const dd = document.getElementById('profileDropdown');
+  const toggle = document.getElementById('profileToggle');
+  if (dd) dd.classList.remove('open');
+  if (toggle) toggle.classList.remove('open');
+}
+// Close dropdown on click outside or Escape key
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeProfileDropdown();
+});
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.profile-dropdown-wrapper')) {
+    closeProfileDropdown();
+  }
+});
+
+// ═══════════════════════════════════════════════════
+// TOAST NOTIFICATIONS
+// ═══════════════════════════════════════════════════
+function showToast(message, type = 'info', duration = 3500) {
+  const container = document.getElementById('toastContainer');
+  if (!container) return;
+  const icons = { success: '✅', error: '❌', info: 'ℹ️' };
+  const toast = document.createElement('div');
+  toast.className = `toast ${type}`;
+  toast.innerHTML = `<span class="toast-icon">${icons[type] || icons.info}</span>${message}`;
+  container.appendChild(toast);
+  setTimeout(() => {
+    toast.classList.add('toast-out');
+    setTimeout(() => toast.remove(), 300);
+  }, duration);
+}
+
+// Override alert() with toast for non-blocking UX
+const _originalAlert = window.alert;
+window.alert = function(msg) {
+  if (msg && typeof msg === 'string') {
+    const isErr = msg.toLowerCase().includes('fail') || msg.toLowerCase().includes('error') || msg.toLowerCase().includes('invalid');
+    const isOk = msg.toLowerCase().includes('success') || msg.toLowerCase().includes('updated') || msg.toLowerCase().includes('saved');
+    showToast(msg, isErr ? 'error' : isOk ? 'success' : 'info');
+  } else {
+    _originalAlert(msg);
+  }
+};
+
+// ═══════════════════════════════════════════════════
+// BUTTON RIPPLE EFFECTS
+// ═══════════════════════════════════════════════════
+document.addEventListener('click', function(e) {
+  const btn = e.target.closest('.btn-fire, .btn-outline, .btn-loc, .auth-btn, .btn-cp');
+  if (!btn) return;
+  const rect = btn.getBoundingClientRect();
+  const size = Math.max(rect.width, rect.height);
+  const ripple = document.createElement('span');
+  ripple.className = 'ripple';
+  ripple.style.width = ripple.style.height = size + 'px';
+  ripple.style.left = (e.clientX - rect.left - size / 2) + 'px';
+  ripple.style.top = (e.clientY - rect.top - size / 2) + 'px';
+  btn.appendChild(ripple);
+  setTimeout(() => ripple.remove(), 600);
+});
